@@ -109,6 +109,7 @@ static zval **pb_get_values(zval *this);
 static int pb_serialize_field_value(zval *this, writer_t *writer, uint32_t field_number, zval **type, zval **value);
 static int pb_field_callback(zval **entry TSRMLS_DC, int num_args, va_list args, zend_hash_key *hash_key);
 static int pb_field_serialize_apply(zval **entry TSRMLS_DC, int num_args, va_list args, zend_hash_key *hash_key);
+static void pb_regulate_field_type(zval **field_type, zval **data_item);
 
 static ulong PB_FIELD_TYPE_HASH;
 static ulong PB_VALUES_PROPERTY_HASH;
@@ -872,20 +873,39 @@ static int pb_field_serialize_apply(zval **entry TSRMLS_DC, int num_args, va_lis
                 INIT_AND_SERIALIZE_OBJ(data_item);
             }
         } else {
-            if (Z_LVAL_PP(field_type) != PB_TYPE_STRING && Z_TYPE_PP(data_item) == IS_STRING) {
-                zval *num;
-                MAKE_STD_ZVAL(num);
-                ZVAL_LONG(num, atoi(Z_STRVAL_PP(data_item)));
-                pb_serialize_field_value(class, writer, field_number, field_type, &num);
-                zval_ptr_dtor(&num);
-            } else {
-                pb_serialize_field_value(class, writer, field_number, field_type, data_item);
-            }
+            pb_regulate_field_type(field_type, data_item);
+            pb_serialize_field_value(class, writer, field_number, field_type, data_item);
         }
     }
 
     return ZEND_HASH_APPLY_KEEP;
 }
+
+static void pb_regulate_field_type(zval **field_type, zval **data_item) {
+
+    switch (Z_LVAL_PP(field_type)) {
+			case PB_TYPE_DOUBLE:
+			case PB_TYPE_FLOAT:
+                if (Z_TYPE_PP(data_item) != IS_DOUBLE)
+                    convert_to_double(*data_item);
+				break;
+
+			case PB_TYPE_INT:
+			case PB_TYPE_BOOL:
+			case PB_TYPE_FIXED64:
+			case PB_TYPE_SIGNED_INT:
+			case PB_TYPE_FIXED32:
+                if (Z_TYPE_PP(data_item) != IS_LONG)
+                    convert_to_long(*data_item);
+				break;
+
+			case PB_TYPE_STRING:
+                if (Z_TYPE_PP(data_item) != IS_STRING)
+                    convert_to_string(*data_item);
+				break;
+    }
+}
+
 static int pb_assign_value(zval *this, zval *dst, zval *src, uint32_t field_number)
 {
 	zval **field_descriptor, *field_descriptors, tmp, **type;
