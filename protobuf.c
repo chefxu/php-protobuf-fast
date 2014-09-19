@@ -44,21 +44,18 @@
 #define RETURN_THIS() RETURN_ZVAL(this_ptr, 1, 0);
 
 #define INIT_AND_ASSIGN_OBJ(xxx) do { \
-    zval *obj, ret, *serialize_data; \
+    zval *obj, ret; \
     MAKE_STD_ZVAL(val); \
     MAKE_STD_ZVAL(obj); \
-    MAKE_STD_ZVAL(serialize_data); \
     object_init_ex(obj, *ce); \
     call_user_function(NULL, &obj, method_construct, &ret, 0, NULL TSRMLS_CC); \
     pb_assign_multi_value(obj, *xxx); \
-    call_user_function(NULL, &obj, method_serialize, serialize_data, 0, NULL TSRMLS_CC); \
-    if (pb_assign_value(class, val, serialize_data, field_number) != 0) { \
+    if (pb_assign_value(class, val, obj, field_number) != 0) { \
         zval_ptr_dtor(&val); \
         zval_ptr_dtor(&obj); \
         return ZEND_HASH_APPLY_KEEP; \
     } \
     zval_ptr_dtor(&obj); \
-    zval_ptr_dtor(&serialize_data); \
 } while(0)
 
 #define INIT_AND_SERIALIZE_OBJ(xxx) do { \
@@ -66,18 +63,14 @@
     zval *obj, *serialize_data_sub, ret; \
     char *pack; \
     int pack_size; \
-    MAKE_STD_ZVAL(obj); \
-    object_init_ex(obj, *ce); \
-    call_user_function(NULL, &obj, method_construct, &ret, 0, NULL TSRMLS_CC); \
-    writer_sub = pb_serialize_data(obj, *xxx); \
+    writer_sub = pb_serialize_data(*ce, *xxx); \
     if (writer_sub.pos) { \
         pack = writer_get_pack(&writer_sub, &pack_size); \
         MAKE_STD_ZVAL(serialize_data_sub); \
         ZVAL_STRINGL(serialize_data_sub, pack, pack_size, 0); \
-        pb_serialize_field_value(class, writer, field_number, field_type, &serialize_data_sub); \
+        pb_serialize_field_value((zval *)NULL, writer, field_number, field_type, &serialize_data_sub); \
         zval_ptr_dtor(&serialize_data_sub); \
     } \
-    zval_ptr_dtor(&obj); \
 } while(0)
 
 enum
@@ -96,7 +89,7 @@ zend_class_entry *pb_entry;
 
 static int pb_assign_value(zval *this, zval *dst, zval *src, uint32_t field_number);
 static int pb_assign_multi_value(zval *class, zval *data);
-static writer_t pb_serialize_data(zval *class, zval *data);
+static writer_t pb_serialize_data(zend_class_entry *ce, zval *data);
 static int pb_dump_field_value(zval **value, long level, zend_bool only_set);
 static zval **pb_get_field_type(zval *this, zval **field_descriptors, uint32_t field_number);
 static zval **pb_get_field_descriptor(zval *this, zval *field_descriptors, uint32_t field_number);
@@ -299,9 +292,9 @@ PHP_METHOD(ProtobufMessage, get)
 PHP_METHOD(ProtobufMessage, mset)
 {
     zval *value;
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a", &value) == FAILURE) {
-		return;
-	}
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a", &value) == FAILURE) {
+        return;
+    }
 
     MAKE_STD_ZVAL(method_construct);
     MAKE_STD_ZVAL(method_serialize);
@@ -319,21 +312,18 @@ PHP_METHOD(ProtobufMessage, serializeData)
 {
     zval *value;
     writer_t writer;
-	char *pack;
-	int pack_size;
+    char *pack;
+    int pack_size;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a", &value) == FAILURE) {
-		return;
-	}
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a", &value) == FAILURE) {
+        return;
+    }
 
-    MAKE_STD_ZVAL(method_construct);
-    ZVAL_STRING(method_construct, "__construct", 1);
-    writer = pb_serialize_data(getThis(), value);
-    zval_ptr_dtor(&method_construct);
+    writer = pb_serialize_data(zend_get_class_entry(getThis()), value);
 
     if (writer.pos) {
-	    pack = writer_get_pack(&writer, &pack_size);
-	    RETURN_STRINGL(pack, pack_size, 0);
+        pack = writer_get_pack(&writer, &pack_size);
+        RETURN_STRINGL(pack, pack_size, 0);
     }
 
     RETURN_FALSE;
@@ -735,21 +725,21 @@ static int pb_field_callback(zval **entry TSRMLS_DC, int num_args, va_list args,
     zval *data = (zval *)va_arg(args, zval*);
     zval *class = (zval *)va_arg(args, zval*);
 
-	zval **value, **field_name, **field_type, **data_item, **field_repeated;
-	zval **array, **values, **old_value, *val;
+    zval **value, **field_name, **field_type, **data_item, **field_repeated;
+    zval **array, **values, **old_value, *val;
     zend_class_entry **ce;
     char *class_name;
-	uint32_t field_number;
+    uint32_t field_number;
 
     if (hash_key->nKeyLength)
         return ZEND_HASH_APPLY_KEEP;
     field_number = (uint32_t)hash_key->h;
 
     if ((zend_hash_find(Z_ARRVAL_PP(entry), PB_FIELD_NAME, sizeof(PB_FIELD_NAME), (void **)&field_name) == FAILURE)
-        || hash_key->nKeyLength
-        || (zend_hash_find(Z_ARRVAL_P(data), Z_STRVAL_PP(field_name), Z_STRLEN_PP(field_name) + 1, (void **) &data_item) == FAILURE)
-        || (zend_hash_find(Z_ARRVAL_PP(entry), PB_FIELD_TYPE, sizeof(PB_FIELD_TYPE), (void **)&field_type) == FAILURE)
-        || (values = pb_get_values(class)) == NULL)
+            || hash_key->nKeyLength
+            || (zend_hash_find(Z_ARRVAL_P(data), Z_STRVAL_PP(field_name), Z_STRLEN_PP(field_name) + 1, (void **) &data_item) == FAILURE)
+            || (zend_hash_find(Z_ARRVAL_PP(entry), PB_FIELD_TYPE, sizeof(PB_FIELD_TYPE), (void **)&field_type) == FAILURE)
+            || (values = pb_get_values(class)) == NULL)
         return ZEND_HASH_APPLY_KEEP;
 
     if (Z_TYPE_PP(field_type) == IS_STRING) {
@@ -801,21 +791,21 @@ static int pb_field_callback(zval **entry TSRMLS_DC, int num_args, va_list args,
     return ZEND_HASH_APPLY_KEEP;
 }
 
-static writer_t pb_serialize_data(zval *class, zval *data) {
+static writer_t pb_serialize_data(zend_class_entry *ce, zval *data) {
 
     zval *fields;
-	writer_t writer;
-	writer_init(&writer);
+    writer_t writer;
+    writer_init(&writer);
 
-    fields = zend_read_static_property(zend_get_class_entry(class), "fields", sizeof("fields") - 1, 0 TSRMLS_DC);
+    fields = zend_read_static_property(ce, "fields", sizeof("fields") - 1, 0 TSRMLS_DC);
     if (Z_TYPE_P(fields) != IS_ARRAY)
         goto fail;
 
-    zend_hash_apply_with_arguments(Z_ARRVAL_P(fields) TSRMLS_CC, (apply_func_args_t) pb_field_serialize_apply, 3, &writer, data, class);
+    zend_hash_apply_with_arguments(Z_ARRVAL_P(fields) TSRMLS_CC, (apply_func_args_t) pb_field_serialize_apply, 2, &writer, data);
     return writer;
 
 fail:
-	writer_free_pack(&writer);
+    writer_free_pack(&writer);
     return writer;
 }
 
@@ -823,23 +813,21 @@ static int pb_field_serialize_apply(zval **entry TSRMLS_DC, int num_args, va_lis
 {
     writer_t *writer = (writer_t *)va_arg(args, writer_t*);
     zval *data = (zval *)va_arg(args, zval*);
-    zval *class = (zval *)va_arg(args, zval*);
 
-	zval **value, **field_name, **field_type, **data_item, **field_repeated;
-	zval **array, **values, **old_value, *val;
+    zval **value, **field_name, **field_type, **data_item, **field_repeated;
+    zval **array, **values, **old_value, *val;
     zend_class_entry **ce;
     char *class_name;
-	uint32_t field_number;
+    uint32_t field_number;
 
     if (hash_key->nKeyLength)
         return ZEND_HASH_APPLY_KEEP;
     field_number = (uint32_t)hash_key->h;
 
     if ((zend_hash_find(Z_ARRVAL_PP(entry), PB_FIELD_NAME, sizeof(PB_FIELD_NAME), (void **)&field_name) == FAILURE)
-        || hash_key->nKeyLength
-        || (zend_hash_find(Z_ARRVAL_P(data), Z_STRVAL_PP(field_name), Z_STRLEN_PP(field_name) + 1, (void **) &data_item) == FAILURE)
-        || (zend_hash_find(Z_ARRVAL_PP(entry), PB_FIELD_TYPE, sizeof(PB_FIELD_TYPE), (void **)&field_type) == FAILURE)
-        || (values = pb_get_values(class)) == NULL)
+            || hash_key->nKeyLength
+            || (zend_hash_find(Z_ARRVAL_P(data), Z_STRVAL_PP(field_name), Z_STRLEN_PP(field_name) + 1, (void **) &data_item) == FAILURE)
+            || (zend_hash_find(Z_ARRVAL_PP(entry), PB_FIELD_TYPE, sizeof(PB_FIELD_TYPE), (void **)&field_type) == FAILURE))
         return ZEND_HASH_APPLY_KEEP;
 
     if (Z_TYPE_PP(field_type) == IS_STRING) {
@@ -855,7 +843,7 @@ static int pb_field_serialize_apply(zval **entry TSRMLS_DC, int num_args, va_lis
         return ZEND_HASH_APPLY_KEEP;
 
     if (zend_hash_find(Z_ARRVAL_PP(entry), "repeated", sizeof("repeated"), (void **)&field_repeated) != FAILURE)  {
-        if (Z_TYPE_PP(data_item) != IS_ARRAY || (array = pb_get_value(class, values, field_number)) == NULL)
+        if (Z_TYPE_PP(data_item) != IS_ARRAY)
             return ZEND_HASH_APPLY_KEEP;
 
         zend_hash_internal_pointer_reset(Z_ARRVAL_PP(data_item));
@@ -863,7 +851,8 @@ static int pb_field_serialize_apply(zval **entry TSRMLS_DC, int num_args, va_lis
             if (Z_TYPE_PP(field_type) == IS_STRING) {
                 INIT_AND_SERIALIZE_OBJ(value);
             } else {
-                pb_serialize_field_value(class, writer, field_number, field_type, value);
+                pb_regulate_field_type(field_type, value);
+                pb_serialize_field_value((zval *)NULL, writer, field_number, field_type, value);
             }
             zend_hash_move_forward(Z_ARRVAL_PP(data_item));
         }
@@ -874,7 +863,7 @@ static int pb_field_serialize_apply(zval **entry TSRMLS_DC, int num_args, va_lis
             }
         } else {
             pb_regulate_field_type(field_type, data_item);
-            pb_serialize_field_value(class, writer, field_number, field_type, data_item);
+            pb_serialize_field_value((zval *)NULL, writer, field_number, field_type, data_item);
         }
     }
 
@@ -884,25 +873,25 @@ static int pb_field_serialize_apply(zval **entry TSRMLS_DC, int num_args, va_lis
 static void pb_regulate_field_type(zval **field_type, zval **data_item) {
 
     switch (Z_LVAL_PP(field_type)) {
-			case PB_TYPE_DOUBLE:
-			case PB_TYPE_FLOAT:
-                if (Z_TYPE_PP(data_item) != IS_DOUBLE)
-                    convert_to_double(*data_item);
-				break;
+        case PB_TYPE_DOUBLE:
+        case PB_TYPE_FLOAT:
+            if (Z_TYPE_PP(data_item) != IS_DOUBLE)
+                convert_to_double(*data_item);
+            break;
 
-			case PB_TYPE_INT:
-			case PB_TYPE_BOOL:
-			case PB_TYPE_FIXED64:
-			case PB_TYPE_SIGNED_INT:
-			case PB_TYPE_FIXED32:
-                if (Z_TYPE_PP(data_item) != IS_LONG)
-                    convert_to_long(*data_item);
-				break;
+        case PB_TYPE_INT:
+        case PB_TYPE_BOOL:
+        case PB_TYPE_FIXED64:
+        case PB_TYPE_SIGNED_INT:
+        case PB_TYPE_FIXED32:
+            if (Z_TYPE_PP(data_item) != IS_LONG)
+                convert_to_long(*data_item);
+            break;
 
-			case PB_TYPE_STRING:
-                if (Z_TYPE_PP(data_item) != IS_STRING)
-                    convert_to_string(*data_item);
-				break;
+        case PB_TYPE_STRING:
+            if (Z_TYPE_PP(data_item) != IS_STRING)
+                convert_to_string(*data_item);
+            break;
     }
 }
 
@@ -1226,7 +1215,8 @@ static int pb_serialize_field_value(zval *this, writer_t *writer, uint32_t field
 				break;
 
 			default:
-				PB_COMPILE_ERROR_EX(this, "unexpected '%s' field type %d in field descriptor", pb_get_field_name(this, field_number), Z_LVAL_PP(type));
+                if (this != NULL)
+                    PB_COMPILE_ERROR_EX(this, "unexpected '%s' field type %d in field descriptor", pb_get_field_name(this, field_number), Z_LVAL_PP(type));
 				return -1;
 		}
 
@@ -1234,7 +1224,8 @@ static int pb_serialize_field_value(zval *this, writer_t *writer, uint32_t field
 			return -1;
 		}
 	} else {
-		PB_COMPILE_ERROR_EX(this, "unexpected %s type of '%s' field type in field descriptor", zend_get_type_by_const(Z_TYPE_PP(type)), pb_get_field_name(this, field_number));
+        if (this != NULL)
+            PB_COMPILE_ERROR_EX(this, "unexpected %s type of '%s' field type in field descriptor", zend_get_type_by_const(Z_TYPE_PP(type)), pb_get_field_name(this, field_number));
 		return -1;
 	}
 
